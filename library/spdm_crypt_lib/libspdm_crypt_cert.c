@@ -739,12 +739,14 @@ static bool libspdm_verify_cert_subject_public_key_info(const uint8_t *cert, siz
  *
  * @param[in]  cert                  Pointer to the DER-encoded certificate data.
  * @param[in]  cert_size             The size of certificate data in bytes.
+ * @param[in]  need_basic_constraints  This value indicates whether basic_constraints must be present in the Cert
  *
- * @retval  true   verify pass,two case: 1.basic constraints is not present in cert;
+ * @retval  true   verify pass,two case: 1.basic constraints is not present in cert, when need_basic_constraints is false;
  *                                       2. cert basic_constraints CA is false;
  * @retval  false  verify fail
  **/
-static bool libspdm_verify_leaf_cert_basic_constraints(const uint8_t *cert, size_t cert_size)
+static bool libspdm_verify_leaf_cert_basic_constraints(const uint8_t *cert, size_t cert_size,
+                                                       bool need_basic_constraints)
 {
     bool status;
     /*basic_constraints from cert*/
@@ -762,7 +764,11 @@ static bool libspdm_verify_leaf_cert_basic_constraints(const uint8_t *cert, size
         return false;
     } else if (len == 0) {
         /* basic constraints is not present in cert */
-        return true;
+        if (need_basic_constraints) {
+            return false;
+        } else {
+            return true;
+        }
     }
 
     if ((len == sizeof(basic_constraints_false_case1)) &&
@@ -1089,31 +1095,58 @@ bool libspdm_x509_common_certificate_check(const uint8_t *cert, size_t cert_size
     /* 4. issuer_name*/
     asn1_buffer_len = 0;
     status = libspdm_x509_get_issuer_name(cert, cert_size, NULL, &asn1_buffer_len);
-    if (asn1_buffer_len == 0) {
-        status = false;
-        goto cleanup;
+    if (status) {
+        if ((asn1_buffer_len == 0) &&
+            (cert_model != SPDM_CERTIFICATE_INFO_CERT_MODEL_GENERIC_CERT)) {
+            status = false;
+            goto cleanup;
+        }
+    } else {
+        if (asn1_buffer_len == 0) {
+            status = false;
+            goto cleanup;
+        }
     }
 
     /* 5. subject_name*/
     asn1_buffer_len = 0;
     status = libspdm_x509_get_subject_name(cert, cert_size, NULL, &asn1_buffer_len);
-    if (asn1_buffer_len == 0) {
-        status = false;
-        goto cleanup;
+    if (status) {
+        if ((asn1_buffer_len == 0) &&
+            (cert_model != SPDM_CERTIFICATE_INFO_CERT_MODEL_GENERIC_CERT)) {
+            status = false;
+            goto cleanup;
+        }
+    } else {
+        if (asn1_buffer_len == 0) {
+            status = false;
+            goto cleanup;
+        }
     }
 
-    /* 6. validaity*/
+    /* 6. validity*/
     status = libspdm_x509_get_validity(cert, cert_size, end_cert_from,
                                        &end_cert_from_len, end_cert_to,
                                        &end_cert_to_len);
-    if (!status) {
-        goto cleanup;
+    if (status) {
+        if ((end_cert_from_len == 0) &&
+            (cert_model != SPDM_CERTIFICATE_INFO_CERT_MODEL_GENERIC_CERT)) {
+            status = false;
+            goto cleanup;
+        }
+    } else {
+        if (end_cert_from_len == 0) {
+            status = false;
+            goto cleanup;
+        }
     }
 
-    status = libspdm_internal_x509_date_time_check(
-        end_cert_from, end_cert_from_len, end_cert_to, end_cert_to_len);
-    if (!status) {
-        goto cleanup;
+    if (end_cert_from_len != 0) {
+        status = libspdm_internal_x509_date_time_check(
+            end_cert_from, end_cert_from_len, end_cert_to, end_cert_to_len);
+        if (!status) {
+            goto cleanup;
+        }
     }
 
     /* 7. subject_public_key*/
@@ -1127,12 +1160,18 @@ bool libspdm_x509_common_certificate_check(const uint8_t *cert, size_t cert_size
     status = libspdm_x509_get_key_usage(cert, cert_size, &value);
     if (!status) {
         goto cleanup;
-    }
-    if (LIBSPDM_CRYPTO_X509_KU_DIGITAL_SIGNATURE & value) {
-        status = true;
     } else {
-        status = false;
-        goto cleanup;
+        if (value == 0) {
+            if (cert_model != SPDM_CERTIFICATE_INFO_CERT_MODEL_GENERIC_CERT) {
+                status = false;
+                goto cleanup;
+            }
+        } else {
+            if ((LIBSPDM_CRYPTO_X509_KU_DIGITAL_SIGNATURE & value) == 0) {
+                status = false;
+                goto cleanup;
+            }
+        }
     }
 
     /* 9. verify spdm defined extended key usage*/
@@ -1190,7 +1229,7 @@ bool libspdm_x509_certificate_check(const uint8_t *cert, size_t cert_size,
     }
 
     /* verify basic constraints: the leaf cert always is ca:false in get_cert*/
-    status = libspdm_verify_leaf_cert_basic_constraints(cert, cert_size);
+    status = libspdm_verify_leaf_cert_basic_constraints(cert, cert_size, false);
     return status;
 }
 
@@ -1223,8 +1262,9 @@ bool libspdm_x509_certificate_check_ex(const uint8_t *cert, size_t cert_size,
         return false;
     }
 
-    /* verify basic constraints: the leaf cert always is ca:false in get_cert*/
-    status = libspdm_verify_leaf_cert_basic_constraints(cert, cert_size);
+    /* verify basic constraints: the leaf cert always is ca:false in get_cert
+     * basic_constraints is mandatory in SPDM 1.3*/
+    status = libspdm_verify_leaf_cert_basic_constraints(cert, cert_size, true);
     return status;
 }
 
